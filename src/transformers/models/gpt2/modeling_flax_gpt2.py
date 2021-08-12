@@ -352,7 +352,8 @@ class FlaxGPT2PreTrainedModel(FlaxPreTrainedModel):
     @add_start_docstrings_to_model_forward(GPT2_INPUTS_DOCSTRING)
     def __call__(
         self,
-        input_ids,
+        input_ids=None,
+        inputs_embeds=None,
         attention_mask=None,
         position_ids=None,
         params: dict = None,
@@ -369,7 +370,16 @@ class FlaxGPT2PreTrainedModel(FlaxPreTrainedModel):
         )
         return_dict = return_dict if return_dict is not None else self.config.return_dict
 
-        batch_size, sequence_length = input_ids.shape
+        if input_ids is not None and inputs_embeds is not None:
+            raise ValueError("You cannot specify both input_ids and inputs_embeds at the same time")
+        elif input_ids is not None:
+            batch_size, sequence_length = input_ids.shape
+            inputs = jnp.array(input_ids, dtype="i4")
+        elif inputs_embeds is not None:
+            batch_size, sequence_length, _ = inputs_embeds.shape
+            inputs = jnp.array(inputs_embeds, dtype="float")
+        else:
+            raise ValueError("You have to specify either input_ids or inputs_embeds")
 
         if position_ids is None:
             if past_key_values is not None:
@@ -385,18 +395,18 @@ class FlaxGPT2PreTrainedModel(FlaxPreTrainedModel):
         if dropout_rng is not None:
             rngs["dropout"] = dropout_rng
 
-        inputs = {"params": params or self.params}
+        state = {"params": params or self.params}
 
         # if past_key_values are passed then cache is already initialized a private flag init_cache has to be passed down to ensure cache is used. It has to be made sure that cache is marked as mutable so that it can be changed by FlaxGPT2Attention module
         if past_key_values:
-            inputs["cache"] = past_key_values
+            state["cache"] = past_key_values
             mutable = ["cache"]
         else:
             mutable = False
 
         outputs = self.module.apply(
+            state,
             inputs,
-            jnp.array(input_ids, dtype="i4"),
             jnp.array(attention_mask, dtype="i4"),
             jnp.array(position_ids, dtype="i4"),
             not train,
@@ -499,7 +509,7 @@ class FlaxGPT2Module(nn.Module):
 
     def __call__(
         self,
-        input_ids,
+        inputs,
         attention_mask,
         position_ids,
         deterministic=True,
@@ -508,7 +518,13 @@ class FlaxGPT2Module(nn.Module):
         output_hidden_states: bool = False,
         return_dict: bool = True,
     ):
-        input_embeds = self.wte(input_ids.astype("i4"))
+        if len(inputs.shape) == 2:
+            input_embeds = self.wte(inputs.astype("i4"))
+        elif len(inputs.shape) == 3:
+            input_embeds = inputs.astype("float")
+        else:
+            raise ValueError(f"Invalid inputs shape: {inputs.shape}. Should be either 2- or 3-dimensional.")
+
         position_embeds = self.wpe(position_ids.astype("i4"))
 
         hidden_states = input_embeds + position_embeds
